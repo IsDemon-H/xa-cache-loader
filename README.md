@@ -4,103 +4,154 @@
 
 ## 前置条件
 
-在推送代码到 GitHub 之前，请确保以下文件存在于仓库中：
+将代码推送到 GitHub 之前，确保以下文件存在于仓库中：
 
 | 文件 | 说明 | 必需 |
 |------|------|------|
-| `icon.jpg` | 应用图标，`build.rs` 会自动生成 `icon.ico` | ✅ |
-| `assets/hc.7z` | 内置缓存文件，编译时会 `include_bytes!` 嵌入 | ✅ |
-| `Cargo.toml` | Rust 项目配置 | ✅ |
-
-> ⚠️ 如果 `assets/hc.7z` 不存在，编译会失败（`include_bytes!` 在编译期检查）。
+| `icon.jpg` | 应用图标，`build.rs` 自动生成 `icon.ico` | ✅ |
+| `assets/hc.7z` | 内置缓存文件，编译时嵌入 | ✅ |
 
 ---
 
-## 🔐 免费代码签名方案
+## 🔐 免费代码签名：Microsoft Trusted Signing
 
-本项目使用 **SignPath Foundation** 为开源项目提供的免费 EV 代码签名证书。签名后的 `.exe` 不会被 Windows SmartScreen 拦截。
+微软官方提供的免费代码签名服务，签名后的 `.exe` 走微软证书链，SmartScreen 直接信任，**零拦截**。
 
-### 第一步：注册 SignPath
+| 对比 | Microsoft Trusted Signing | SignPath Foundation |
+|------|--------------------------|---------------------|
+| 费用 | ✅ 免费 (5000次/月) | ✅ 免费 |
+| 审核 | ✅ **无需审核** | ❌ 严格审核 |
+| 要求 | 无 | 项目需被广泛使用 |
+| 证书链 | 微软官方证书 | 第三方 EV 证书 |
 
-1. 打开 https://signpath.org/ （SignPath Foundation 页面）
-2. 点击 **"Apply for free code signing"**（申请免费代码签名）
-3. 填写项目信息：
-   - **项目名**: `xa-cache-loader`
-   - **仓库地址**: `https://github.com/IsDemon-H/xa-cache-loader`
-   - **描述**: Windows GUI tool for extracting Xa cache files, built with Rust and egui
-   - **许可证**: 选择合适的开源许可证（推荐 MIT 或 GPL-3.0）
-4. 等待 SignPath 审核（通常 1-3 个工作日）
+---
 
-### 第二步：获取 SignPath 凭证
+### 📋 一次性配置（约 10 分钟）
 
-审核通过后，在 SignPath 控制台获取以下信息：
+#### 1. 注册 Azure 账号
 
-| 参数 | 说明 |
+打开 https://portal.azure.com → 用 GitHub 账号或邮箱注册（免费，无需信用卡）。
+
+#### 2. 创建 Trusted Signing Account
+
+在 Azure Portal 顶部搜索栏输入 `Trusted Signing` → 点击 **"信任签名帐户"**：
+
+| 字段 | 填写 |
 |------|------|
-| `Organization ID` | 组织唯一标识 |
-| `Project Slug` | 项目标识（如 `xa-cache-loader`） |
-| `Signing Policy Slug` | 签名策略标识（如 `release-signing`） |
-| `API Token` | 用于 CI 调用的 API 密钥 |
+| 订阅 | 选择你的订阅 |
+| 资源组 | 新建，命名 `xa-cache-loader` |
+| 帐户名称 | `xa-cache-loader` |
+| 定价层 | **Community**（免费层） |
+| 区域 | `East US` 或任意 |
 
-### 第三步：配置 GitHub Secrets
+点击"审阅并创建" → "创建"。
 
-在 GitHub 仓库页面：**Settings → Secrets and variables → Actions → New repository secret**
+#### 3. 创建证书配置文件
 
-添加以下 secrets：
+进入刚创建的 Trusted Signing Account → **证书配置文件** → **添加**：
+
+| 字段 | 填写 |
+|------|------|
+| 配置文件名称 | `release` |
+| 证书类型 | **Public-Trust**（公开信任） |
+| 主体 | 留空 |
+
+创建完成。
+
+#### 4. 配置 OIDC（让 GitHub Actions 免密码访问 Azure）
+
+在 Azure Portal 搜索 `Microsoft Entra ID` → **应用注册** → **新注册**：
+
+| 字段 | 填写 |
+|------|------|
+| 名称 | `xa-cache-loader-ci` |
+| 支持的帐户类型 | 仅此组织目录中的帐户 |
+
+注册完成后，进入该应用 → **证书和密码** → **联合凭据** → **添加凭据**：
+
+| 字段 | 填写 |
+|------|------|
+| 联合凭据方案 | `GitHub Actions` |
+| 组织 | `IsDemon-H` |
+| 仓库 | `xa-cache-loader` |
+| 实体类型 | `分支` |
+| GitHub 分支名称 | `main` |
+| 名称 | `release-signing` |
+
+点击"添加"。
+
+回到应用**概览**页面，记下：
+- `应用程序(客户端) ID`（一串 UUID）
+
+在 Azure Portal 搜索 `订阅` → 记下你的 `订阅 ID`。
+
+在 Microsoft Entra ID 概览页面，记下 `租户 ID`。
+
+#### 5. 授权 Trusted Signing 访问
+
+进入 Trusted Signing Account → **访问控制(IAM)** → **添加角色分配**：
+
+| 字段 | 填写 |
+|------|------|
+| 角色 | `Trusted Signing Certificate Profile Signer` |
+| 成员 | 选择 `xa-cache-loader-ci`（步骤4注册的应用） |
+
+保存。
+
+---
+
+### 🔐 设置 GitHub Secrets
+
+在仓库 **Settings → Secrets and variables → Actions → New repository secret**，添加 3 个 secrets：
 
 | Secret 名 | 值 |
 |-----------|-----|
-| `SIGNPATH_API_TOKEN` | SignPath 的 API Token |
-| `SIGNPATH_ORG_ID` | SignPath 的 Organization ID |
+| `TRUSTED_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net`（根据你的区域，见下表） |
+| `TRUSTED_SIGNING_ACCOUNT` | `xa-cache-loader` |
+| `CERTIFICATE_PROFILE_NAME` | `release` |
 
-### 第四步：触发签名构建
+以及 **Actions → Variables** 中添加 3 个变量：
 
-推送一个版本标签即可触发自动构建 + 签名：
+| 变量名 | 值 |
+|--------|-----|
+| `AZURE_CLIENT_ID` | 步骤4 记下的应用程序(客户端) ID |
+| `AZURE_TENANT_ID` | 步骤4 记下的租户 ID |
+| `AZURE_SUBSCRIPTION_ID` | 步骤4 记下的订阅 ID |
+
+**端点区域对照表**：
+
+| 区域 | 端点 URL |
+|------|----------|
+| East US | `https://eus.codesigning.azure.net` |
+| West US | `https://wus.codesigning.azure.net` |
+| West Europe | `https://weu.codesigning.azure.net` |
+
+---
+
+### 🚀 触发签名发布
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-GitHub Actions 会自动：
+推送标签后，GitHub Actions 自动：
 1. 编译 Release 版本
-2. 提交到 SignPath 进行代码签名
-3. 将签名后的 exe 发布为 GitHub Release
+2. 调用 Microsoft Trusted Signing 签名
+3. 发布签名后的 exe 到 GitHub Release
 
-也可以手动触发：在 GitHub 仓库的 **Actions → Build and Sign → Run workflow**。
+也可以在 **Actions → Build and Sign → Run workflow** 手动触发（签名产物会作为 artifact 下载）。
 
 ---
 
 ## 本地构建
 
 ```bash
-# 安装 Rust: https://rustup.rs
-# 需要 Windows 系统
-
 cargo build --release
-
 # 输出: target/release/xa-cache-loader.exe
 ```
 
----
-
-## 备选免费签名方案
-
-如果 SignPath 审核不通过，可以考虑：
-
-### Microsoft Trusted Signing（免费层）
-
-```yaml
-# 在 workflow 中添加 signing job
-- name: Sign with Microsoft Trusted Signing
-  uses: azure/trusted-signing-action@v1
-  with:
-    endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
-    certificate-profile-name: ${{ secrets.CERTIFICATE_PROFILE_NAME }}
-    files: "*.exe"
-```
-
-需要在 Azure Portal 创建 Trusted Signing Account（Community 层免费，每月 5000 次签名）。
+本地构建的 exe **没有签名**，会触发 SmartScreen。签名只在 GitHub Actions 中进行。
 
 ---
 
@@ -109,5 +160,5 @@ cargo build --release
 - **Rust** (edition 2024)
 - **egui/eframe** 0.31 — GUI 框架
 - **zip** + **sevenz-rust** — 压缩文件解压
-- **winresource** — Windows 版本信息资源嵌入
-- **SignPath** — 免费代码签名
+- **winresource** — Windows 版本资源嵌入
+- **Microsoft Trusted Signing** — 免费代码签名
