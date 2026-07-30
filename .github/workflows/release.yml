@@ -1,0 +1,89 @@
+name: Build and Sign
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Upload unsigned artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xa-cache-loader-unsigned
+          path: target/release/xa-cache-loader.exe
+
+  sign:
+    needs: build
+    runs-on: windows-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download unsigned artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xa-cache-loader-unsigned
+
+      - name: Submit to SignPath for signing
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORG_ID }}
+          project-slug: xa-cache-loader
+          signing-policy-slug: release-signing
+          input-artifact-path: xa-cache-loader.exe
+          output-artifact-path: xa-cache-loader-signed.exe
+          wait-for-completion: true
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xa-cache-loader-signed
+          path: xa-cache-loader-signed.exe
+
+  release:
+    needs: sign
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download signed artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: xa-cache-loader-signed
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: xa-cache-loader-signed.exe
+          name: "Xa缓存加载工具 ${{ github.ref_name }}"
+          body: |
+            ## Xa缓存加载工具 ${{ github.ref_name }}
+
+            ✅ 已通过 SignPath 免费代码签名，SmartScreen 不会拦截。
+
+            ### 使用方法
+            1. 下载 `xa-cache-loader-signed.exe`
+            2. 放置到 HanBot 目录，或任意目录
+            3. 同目录下放置 `Xa缓存.zip`（可选）
+            4. 运行程序，点击"加载"
+
+            > 由 SignPath Foundation 提供免费代码签名
