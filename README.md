@@ -32,46 +32,52 @@
 
 打开 https://portal.azure.com → 用 GitHub 账号或邮箱注册（免费，无需信用卡）。
 
-#### 2. 创建 Trusted Signing Account
+#### 2. 创建信任签名帐户
 
-在 Azure Portal 顶部搜索栏输入 `Trusted Signing` → 点击 **"信任签名帐户"**：
+在 Azure Portal 顶部搜索栏输入 `信任签名` → 点击搜索结果中的 **"信任签名帐户"**：
 
-| 字段 | 填写 |
-|------|------|
-| 订阅 | 选择你的订阅 |
-| 资源组 | 新建，命名 `xa-cache-loader` |
+| 中文界面看到的字段 | 填写 |
+|-------------------|------|
+| 订阅 | 选择你的订阅（默认那个就行） |
+| 资源组 | 点击"新建"，命名 `xa-cache-loader` |
 | 帐户名称 | `xa-cache-loader` |
 | 定价层 | **Community**（免费层） |
-| 区域 | `East US` 或任意 |
+| 区域 | `East US` |
 
 点击"审阅并创建" → "创建"。
 
 #### 3. 创建证书配置文件
 
-进入刚创建的 Trusted Signing Account → **证书配置文件** → **添加**：
+部署完成后点"转到资源"，进入刚创建的信任签名帐户 → 左侧菜单 **"证书配置文件"** → 顶部 **"+ 添加"**：
 
-| 字段 | 填写 |
-|------|------|
+| 中文界面看到的字段 | 填写 |
+|-------------------|------|
 | 配置文件名称 | `release` |
 | 证书类型 | **Public-Trust**（公开信任） |
-| 主体 | 留空 |
+| 使用者 | 留空 |
 
-创建完成。
+点击"审阅并创建"。
 
 #### 4. 配置 OIDC（让 GitHub Actions 免密码访问 Azure）
 
-在 Azure Portal 搜索 `Microsoft Entra ID` → **应用注册** → **新注册**：
+##### 4a. 注册应用
 
-| 字段 | 填写 |
-|------|------|
+在 Azure Portal 顶部搜索 `Microsoft Entra ID`（中文界面搜索 "应用注册" 也行）→ 左侧 **"应用注册"** → 顶部 **"+ 新注册"**：
+
+| 中文界面看到的字段 | 填写 |
+|-------------------|------|
 | 名称 | `xa-cache-loader-ci` |
 | 支持的帐户类型 | 仅此组织目录中的帐户 |
 
-注册完成后，进入该应用 → **证书和密码** → **联合凭据** → **添加凭据**：
+点击"注册"。
 
-| 字段 | 填写 |
-|------|------|
-| 联合凭据方案 | `GitHub Actions` |
+##### 4b. 创建联合凭据
+
+进入刚注册的应用 → 左侧 **"证书和密码"** → 顶部标签 **"联合凭据"** → **"+ 添加凭据"**：
+
+| 中文界面看到的字段 | 填写 |
+|-------------------|------|
+| 联合凭据方案 | `GitHub Actions`（在下拉列表里选） |
 | 组织 | `IsDemon-H` |
 | 仓库 | `xa-cache-loader` |
 | 实体类型 | `分支` |
@@ -80,51 +86,62 @@
 
 点击"添加"。
 
-回到应用**概览**页面，记下：
-- `应用程序(客户端) ID`（一串 UUID）
+##### 4c. 记下三个 ID
 
-在 Azure Portal 搜索 `订阅` → 记下你的 `订阅 ID`。
+回到应用 **"概览"** 页面，记下以下值（马上要用）：
 
-在 Microsoft Entra ID 概览页面，记下 `租户 ID`。
+- **应用程序(客户端) ID** — 一串 UUID，形如 `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+- **目录(租户) ID** — 同样是一串 UUID
 
-#### 5. 授权 Trusted Signing 访问
+再去 Azure Portal 顶部搜索 `订阅` → 打开 **"订阅"** 页面 → 记下你的 **订阅 ID**。
 
-进入 Trusted Signing Account → **访问控制(IAM)** → **添加角色分配**：
+> 📝 这 3 个 ID 记在记事本里，等下配 GitHub 要用。
 
-| 字段 | 填写 |
-|------|------|
-| 角色 | `Trusted Signing Certificate Profile Signer` |
-| 成员 | 选择 `xa-cache-loader-ci`（步骤4注册的应用） |
+#### 5. 授权信任签名访问
 
-保存。
+回到信任签名帐户页面 → 左侧 **"访问控制(IAM)"** → 顶部 **"+ 添加"** → **"添加角色分配"**：
+
+| 中文界面看到的字段 | 填写 |
+|-------------------|------|
+| 角色 | 搜索 `Trusted Signing Certificate Profile Signer`，搜到后选中 |
+| 成员 | 点击 "+ 选择成员"，搜索 `xa-cache-loader-ci`，选中 |
+
+点击"审阅并分配"。
 
 ---
 
-### 🔐 设置 GitHub Secrets
+### 🔐 设置 GitHub Secrets 和 Variables
 
-在仓库 **Settings → Secrets and variables → Actions → New repository secret**，添加 3 个 secrets：
+打开你的仓库 `https://github.com/IsDemon-H/xa-cache-loader` → **Settings** → **Secrets and variables** → **Actions**。
 
-| Secret 名 | 值 |
-|-----------|-----|
-| `TRUSTED_SIGNING_ENDPOINT` | `https://eus.codesigning.azure.net`（根据你的区域，见下表） |
-| `TRUSTED_SIGNING_ACCOUNT` | `xa-cache-loader` |
-| `CERTIFICATE_PROFILE_NAME` | `release` |
+#### Secrets（3 个）
 
-以及 **Actions → Variables** 中添加 3 个变量：
+点击 **Secrets** 标签 → **New repository secret**：
+
+| Secret 名 | 值 | 说明 |
+|-----------|-----|------|
+| `TRUSTED_SIGNING_ENDPOINT` | 见下方端点表 | 信任签名服务的端点 URL |
+| `TRUSTED_SIGNING_ACCOUNT` | `xa-cache-loader` | 步骤2 创建的帐户名称 |
+| `CERTIFICATE_PROFILE_NAME` | `release` | 步骤3 创建的证书配置文件名称 |
+
+#### Variables（3 个）
+
+切换到 **Variables** 标签 → **New repository variable**：
 
 | 变量名 | 值 |
 |--------|-----|
-| `AZURE_CLIENT_ID` | 步骤4 记下的应用程序(客户端) ID |
-| `AZURE_TENANT_ID` | 步骤4 记下的租户 ID |
-| `AZURE_SUBSCRIPTION_ID` | 步骤4 记下的订阅 ID |
+| `AZURE_CLIENT_ID` | 步骤4c 记下的 应用程序(客户端) ID |
+| `AZURE_TENANT_ID` | 步骤4c 记下的 目录(租户) ID |
+| `AZURE_SUBSCRIPTION_ID` | 步骤4c 记下的 订阅 ID |
 
-**端点区域对照表**：
+**端点对照表**（根据步骤2 创建时选的区域）：
 
-| 区域 | 端点 URL |
-|------|----------|
+| 你选的区域 | `TRUSTED_SIGNING_ENDPOINT` 填这个 |
+|-----------|-----------------------------------|
 | East US | `https://eus.codesigning.azure.net` |
 | West US | `https://wus.codesigning.azure.net` |
 | West Europe | `https://weu.codesigning.azure.net` |
+| 其他 | 在 Azure 信任签名帐户的"概述"页面可查到
 
 ---
 
