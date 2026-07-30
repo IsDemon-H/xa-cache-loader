@@ -306,6 +306,16 @@ impl eframe::App for XaApp {
                     }
                 });
 
+            // Watermark
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new("by Demon")
+                        .size(11.0)
+                        .color(egui::Color32::from_rgba_premultiplied(128, 128, 128, 80)),
+                );
+            });
+
             if self.state != LoadState::Loading {
                 self.bot_core_exists = extract::check_bot_core(
                     &self.config.get_target_path(&self.exe_dir),
