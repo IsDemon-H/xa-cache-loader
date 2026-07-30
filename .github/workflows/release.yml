@@ -7,9 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
   contents: write
-  attestations: write
 
 jobs:
   build-and-sign:
@@ -30,26 +28,25 @@ jobs:
       - name: Build release
         run: cargo build --release
 
-      - name: Azure OIDC login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Generate self-signed code signing certificate
+        shell: powershell
+        run: |
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject "CN=XaCacheLoader" `
+            -KeyUsage DigitalSignature `
+            -CertStoreLocation "Cert:\CurrentUser\My"
+          $cert | Export-Certificate -FilePath cert.cer -Type CERT
+          Write-Host "Certificate thumbprint: $($cert.Thumbprint)"
 
-      - name: Sign with Microsoft Trusted Signing
-        uses: azure/trusted-signing-action@v0
-        with:
-          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.CERTIFICATE_PROFILE_NAME }}
-          files-folder: target/release
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      - name: Sign executable
+        shell: powershell
+        run: |
+          $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert | Select-Object -First 1
+          $out = "target\release\xa-cache-loader.exe"
+          Set-AuthenticodeSignature -FilePath $out -Certificate $cert -TimestampServer "http://timestamp.digicert.com"
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
@@ -58,17 +55,16 @@ jobs:
           body: |
             ## Xa缓存加载工具 ${{ github.ref_name }}
 
-            ✅ 已通过 Microsoft 信任签名免费签名，SmartScreen 不会拦截。
-
             ### 使用方法
             1. 下载 `xa-cache-loader.exe`
             2. 放置到目标目录
             3. 同目录下放置 `Xa缓存.zip`（可选）
             4. 运行程序，点击"加载"
 
-            > 由 Microsoft Trusted Signing (Community 免费层) 提供代码签名
+            > ⚠️ 首次运行 SmartScreen 可能会警告，点"更多信息"→"仍要运行"即可。
+            > 可以使用免费代码签名证书后更新此工作流。
 
-      - name: Upload artifact (workflow_dispatch)
+      - name: Upload artifact (manual trigger)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:

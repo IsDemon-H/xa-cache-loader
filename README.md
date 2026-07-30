@@ -2,162 +2,47 @@
 
 基于 Rust + egui 的 Windows GUI 工具，用于加载和解压 Xa 缓存文件到目标目录。
 
-## 前置条件
+---
 
-将代码推送到 GitHub 之前，确保以下文件存在于仓库中：
+## 🔐 代码签名：现实情况
 
-| 文件 | 说明 | 必需 |
+**免费代码签名方案的真实状态：**
+
+| 方案 | 状态 | 原因 |
 |------|------|------|
-| `icon.jpg` | 应用图标，`build.rs` 自动生成 `icon.ico` | ✅ |
-| `assets/hc.7z` | 内置缓存文件，编译时嵌入 | ✅ |
+| Microsoft Trusted Signing | ❌ 不可用 | 仅限美国/加拿大组织，需3年以上历史 |
+| SignPath Foundation | ❌ 不可用 | 严格审核，要求软件被广泛使用 |
+| 购买证书（淘宝等） | ⚠️ 几百元/年 | Sectigo/Comodo OV 证书，最实际的办法 |
+| 自签名 | ✅ 免费 | SmartScreen 仍会警告，但文件有签名 |
+
+**结论：纯免费+SmartScreen不拦截 = 目前不存在适合你情况的方案。**
 
 ---
 
-## 🔐 免费代码签名：Microsoft Trusted Signing
+## 🎯 实际建议
 
-微软官方提供的免费代码签名服务，签名后的 `.exe` 走微软证书链，SmartScreen 直接信任，**零拦截**。
+### 方案 A：自签名（免费，本仓库已配置）
 
-| 对比 | Microsoft Trusted Signing | SignPath Foundation |
-|------|--------------------------|---------------------|
-| 费用 | ✅ 免费 (5000次/月) | ✅ 免费 |
-| 审核 | ✅ **无需审核** | ❌ 严格审核 |
-| 要求 | 无 | 项目需被广泛使用 |
-| 证书链 | 微软官方证书 | 第三方 EV 证书 |
+每个 release 会用自签名证书签名。文件属性里能看到"数字签名"标签，可以验证文件未被篡改。
 
----
+代价：用户首次运行 SmartScreen 会提示"Windows 已保护你的电脑"，点"更多信息"→"仍要运行"即可。
 
-### 📋 一次性配置（约 10 分钟）
+### 方案 B：购买证书（推荐，如果你要分发）
 
-#### 1. 注册 Azure 账号
-
-打开 https://portal.azure.com → 用 GitHub 账号或邮箱注册（免费，无需信用卡）。
-
-#### 2. 创建信任签名帐户
-
-在 Azure Portal 顶部搜索栏输入 `信任签名` → 点击搜索结果中的 **"信任签名帐户"**：
-
-| 中文界面看到的字段 | 填写 |
-|-------------------|------|
-| 订阅 | 选择你的订阅（默认那个就行） |
-| 资源组 | 点击"新建"，命名 `xa-cache-loader` |
-| 帐户名称 | `xa-cache-loader` |
-| 定价层 | **Community**（免费层） |
-| 区域 | `East US` |
-
-点击"审阅并创建" → "创建"。
-
-#### 3. 创建证书配置文件
-
-部署完成后点"转到资源"，进入刚创建的信任签名帐户 → 左侧菜单 **"证书配置文件"** → 顶部 **"+ 添加"**：
-
-| 中文界面看到的字段 | 填写 |
-|-------------------|------|
-| 配置文件名称 | `release` |
-| 证书类型 | **Public-Trust**（公开信任） |
-| 使用者 | 留空 |
-
-点击"审阅并创建"。
-
-#### 4. 配置 OIDC（让 GitHub Actions 免密码访问 Azure）
-
-##### 4a. 注册应用
-
-在 Azure Portal 顶部搜索 `Microsoft Entra ID`（中文界面搜索 "应用注册" 也行）→ 左侧 **"应用注册"** → 顶部 **"+ 新注册"**：
-
-| 中文界面看到的字段 | 填写 |
-|-------------------|------|
-| 名称 | `xa-cache-loader-ci` |
-| 支持的帐户类型 | 仅此组织目录中的帐户 |
-
-点击"注册"。
-
-##### 4b. 创建联合凭据
-
-进入刚注册的应用 → 左侧 **"证书和密码"** → 顶部标签 **"联合凭据"** → **"+ 添加凭据"**：
-
-| 中文界面看到的字段 | 填写 |
-|-------------------|------|
-| 联合凭据方案 | `GitHub Actions`（在下拉列表里选） |
-| 组织 | `IsDemon-H` |
-| 仓库 | `xa-cache-loader` |
-| 实体类型 | `分支` |
-| GitHub 分支名称 | `main` |
-| 名称 | `release-signing` |
-
-点击"添加"。
-
-##### 4c. 记下三个 ID
-
-回到应用 **"概览"** 页面，记下以下值（马上要用）：
-
-- **应用程序(客户端) ID** — 一串 UUID，形如 `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-- **目录(租户) ID** — 同样是一串 UUID
-
-再去 Azure Portal 顶部搜索 `订阅` → 打开 **"订阅"** 页面 → 记下你的 **订阅 ID**。
-
-> 📝 这 3 个 ID 记在记事本里，等下配 GitHub 要用。
-
-#### 5. 授权信任签名访问
-
-回到信任签名帐户页面 → 左侧 **"访问控制(IAM)"** → 顶部 **"+ 添加"** → **"添加角色分配"**：
-
-| 中文界面看到的字段 | 填写 |
-|-------------------|------|
-| 角色 | 搜索 `Trusted Signing Certificate Profile Signer`，搜到后选中 |
-| 成员 | 点击 "+ 选择成员"，搜索 `xa-cache-loader-ci`，选中 |
-
-点击"审阅并分配"。
+淘宝搜"代码签名证书"，Sectigo/Comodo OV 证书约 ¥300-800/年。拿到 `.pfx` 文件后，在 GitHub Secrets 中配置即可，SmartScreen 不再拦截。
 
 ---
 
-### 🔐 设置 GitHub Secrets 和 Variables
+## GitHub Actions 自动构建 + 自签名
 
-打开你的仓库 `https://github.com/IsDemon-H/xa-cache-loader` → **Settings** → **Secrets and variables** → **Actions**。
-
-#### Secrets（3 个）
-
-点击 **Secrets** 标签 → **New repository secret**：
-
-| Secret 名 | 值 | 说明 |
-|-----------|-----|------|
-| `TRUSTED_SIGNING_ENDPOINT` | 见下方端点表 | 信任签名服务的端点 URL |
-| `TRUSTED_SIGNING_ACCOUNT` | `xa-cache-loader` | 步骤2 创建的帐户名称 |
-| `CERTIFICATE_PROFILE_NAME` | `release` | 步骤3 创建的证书配置文件名称 |
-
-#### Variables（3 个）
-
-切换到 **Variables** 标签 → **New repository variable**：
-
-| 变量名 | 值 |
-|--------|-----|
-| `AZURE_CLIENT_ID` | 步骤4c 记下的 应用程序(客户端) ID |
-| `AZURE_TENANT_ID` | 步骤4c 记下的 目录(租户) ID |
-| `AZURE_SUBSCRIPTION_ID` | 步骤4c 记下的 订阅 ID |
-
-**端点对照表**（根据步骤2 创建时选的区域）：
-
-| 你选的区域 | `TRUSTED_SIGNING_ENDPOINT` 填这个 |
-|-----------|-----------------------------------|
-| East US | `https://eus.codesigning.azure.net` |
-| West US | `https://wus.codesigning.azure.net` |
-| West Europe | `https://weu.codesigning.azure.net` |
-| 其他 | 在 Azure 信任签名帐户的"概述"页面可查到
-
----
-
-### 🚀 触发签名发布
+推送 `v*` 标签自动编译并签名发布：
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-推送标签后，GitHub Actions 自动：
-1. 编译 Release 版本
-2. 调用 Microsoft Trusted Signing 签名
-3. 发布签名后的 exe 到 GitHub Release
-
-也可以在 **Actions → Build and Sign → Run workflow** 手动触发（签名产物会作为 artifact 下载）。
+也可在 Actions 页面手动触发（`workflow_dispatch`）。
 
 ---
 
@@ -168,8 +53,6 @@ cargo build --release
 # 输出: target/release/xa-cache-loader.exe
 ```
 
-本地构建的 exe **没有签名**，会触发 SmartScreen。签名只在 GitHub Actions 中进行。
-
 ---
 
 ## 技术栈
@@ -178,4 +61,3 @@ cargo build --release
 - **egui/eframe** 0.31 — GUI 框架
 - **zip** + **sevenz-rust** — 压缩文件解压
 - **winresource** — Windows 版本资源嵌入
-- **Microsoft Trusted Signing** — 免费代码签名
