@@ -27,6 +27,7 @@ pub struct XaApp {
     state: LoadState,
     bot_core_exists: bool,
     bg_rx: Option<mpsc::Receiver<BgMessage>>,
+    last_pct: u32,
 }
 
 impl XaApp {
@@ -47,9 +48,10 @@ impl XaApp {
             state: LoadState::Idle,
             bot_core_exists,
             bg_rx: None,
+            last_pct: 0,
         };
         app.add_log("说明: 点击加载 → 从仓库下载Xa缓存后解压");
-        app.add_log("      同目录放置 Xa缓存.zip 则优先使用本地文件");
+        app.add_log("同目录放置 Xa缓存.zip 则优先使用本地文件");
         app
     }
 
@@ -71,10 +73,10 @@ impl XaApp {
         let (tx, rx) = mpsc::channel();
         self.bg_rx = Some(rx);
         self.state = LoadState::Loading;
+        self.last_pct = 0;
 
         let exe_dir = self.exe_dir.clone();
         let target_dir_clone = target_dir.clone();
-        let embedded_7z = include_bytes!("../assets/hc.7z").to_vec();
 
         std::thread::spawn(move || {
             let log = |msg: &str| {
@@ -90,8 +92,8 @@ impl XaApp {
                 }
                 Err(e) => {
                     log(&format!("网络检测: {}", e));
-                    log("将使用本地/内置缓存");
-                    do_local_extract(&tx, &log, &exe_dir, &target_dir_clone, &embedded_7z);
+                    log("将使用本地缓存");
+                    do_local_extract(&tx, &log, &exe_dir, &target_dir_clone);
                     return;
                 }
             }
@@ -106,8 +108,8 @@ impl XaApp {
                 }
                 Err(e) => {
                     log(&format!("获取远程版本失败: {}", e));
-                    log("将使用本地/内置缓存");
-                    do_local_extract(&tx, &log, &exe_dir, &target_dir_clone, &embedded_7z);
+                    log("将使用本地缓存");
+                    do_local_extract(&tx, &log, &exe_dir, &target_dir_clone);
                     return;
                 }
             };
@@ -149,9 +151,11 @@ impl XaApp {
                 log(&format!("正在下载 Xa缓存.zip ({})", size_str));
 
                 let tx_p = tx.clone();
+                let known_size = remote_info.size;
                 let dl_result = extract::download_file(
-                    extract::DOWNLOAD_URL,
+                    &extract::get_download_url(),
                     &local_zip,
+                    known_size,
                     move |downloaded, total| {
                         tx_p.send(BgMessage::DownloadProgress { downloaded, total })
                             .ok();
@@ -167,9 +171,9 @@ impl XaApp {
                                 log(&format!("本地 MD5: {}", dl_md5));
                                 log(&format!("远程 MD5: {}", remote_info.md5));
                                 if dl_md5 == remote_info.md5 {
-                                    log("MD5校验通过 ✓");
+                                    log("MD5校验通过");
                                 } else {
-                                    log("MD5校验失败 ✗，文件可能损坏");
+                                    log("MD5校验失败，文件可能损坏");
                                     tx.send(BgMessage::Done {
                                         bot_core_exists: true,
                                     })
@@ -189,7 +193,7 @@ impl XaApp {
                     }
                     Err(e) => {
                         log(&format!("下载失败: {}", e));
-                        log("将使用本地/内置缓存");
+                        log("将使用本地缓存");
                         // Don't return here — fall through to extract
                     }
                 }
@@ -198,7 +202,7 @@ impl XaApp {
             // ================================================================
             // Step 5: Extract
             // ================================================================
-            do_extract(&tx, &log, &exe_dir, &target_dir_clone, &embedded_7z);
+            do_local_extract(&tx, &log, &exe_dir, &target_dir_clone);
         });
     }
 
@@ -232,17 +236,6 @@ fn do_local_extract(
     log: &impl Fn(&str),
     exe_dir: &PathBuf,
     target_dir: &PathBuf,
-    embedded_7z: &[u8],
-) {
-    do_extract(tx, log, exe_dir, target_dir, embedded_7z);
-}
-
-fn do_extract(
-    tx: &mpsc::Sender<BgMessage>,
-    log: &impl Fn(&str),
-    exe_dir: &PathBuf,
-    target_dir: &PathBuf,
-    embedded_7z: &[u8],
 ) {
     match extract::clear_saves_dir(target_dir) {
         Ok(_) => log("已清理 saves 目录"),
@@ -280,26 +273,7 @@ fn do_extract(
             }
         }
     } else {
-        log("解压内置 hc.7z...");
-
-        let temp_7z = exe_dir.join("_hc_temp.7z");
-        match std::fs::write(&temp_7z, embedded_7z) {
-            Ok(_) => {
-                match extract::extract_7z(&temp_7z, target_dir, |_| {}) {
-                    Ok(_) => {
-                        let _ = std::fs::remove_file(&temp_7z);
-                        log("Xa缓存加载完成");
-                    }
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&temp_7z);
-                        log(&format!("解压失败: {}", e));
-                    }
-                }
-            }
-            Err(e) => {
-                log(&format!("无法解压内置缓存: {}", e));
-            }
-        }
+        log("错误: 未找到 Xa缓存.zip");
     }
 
     let bot_exists = extract::check_bot_core(target_dir);
@@ -313,25 +287,19 @@ impl eframe::App for XaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut done = false;
         let mut done_bot = false;
-        let mut dl_progress: Option<(u64, u64)> = None;
 
         if let Some(rx) = &self.bg_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
                     BgMessage::Log(s) => self.logs.push(s),
                     BgMessage::DownloadProgress { downloaded, total } => {
-                        let progress = extract::format_progress(downloaded, total);
-                        // Replace last log line if it's a progress line, otherwise append
-                        if let Some(last) = self.logs.last_mut() {
-                            if last.contains("[=") && last.contains('>') && last.contains('%') {
-                                *last = progress;
-                            } else {
-                                self.logs.push(progress);
-                            }
-                        } else {
-                            self.logs.push(progress);
+                        let pct = if total > 0 {
+                            ((downloaded as f64 / total as f64) * 100.0) as u32
+                        } else { 0 };
+                        if pct != self.last_pct {
+                            self.last_pct = pct;
+                            self.logs.push(extract::format_progress(downloaded, total));
                         }
-                        dl_progress = Some((downloaded, total));
                     }
                     BgMessage::Done { bot_core_exists } => {
                         done = true;

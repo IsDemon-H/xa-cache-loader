@@ -2,6 +2,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use md5::Digest;
+
 /// Result of extraction progress callback
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -57,21 +59,6 @@ pub fn extract_zip(
         progress_cb(ExtractProgress::Progress(progress));
     }
 
-    Ok(())
-}
-
-/// Extract a .7z file to target directory
-pub fn extract_7z(
-    sevenz_path: &Path,
-    target_dir: &Path,
-    progress_cb: impl Fn(ExtractProgress),
-) -> Result<(), String> {
-    fs::create_dir_all(target_dir).map_err(|e| format!("无法创建目标目录: {}", e))?;
-
-    sevenz_rust::decompress_file(sevenz_path, target_dir)
-        .map_err(|e| format!("7z解压失败: {}", e))?;
-
-    progress_cb(ExtractProgress::Progress(1.0));
     Ok(())
 }
 
@@ -151,7 +138,27 @@ pub struct VersionInfo {
 }
 
 pub const VERSION_URL: &str = "https://gitee.com/dog176/xaupload/raw/master/version.json";
-pub const DOWNLOAD_URL: &str = "https://gitee.com/dog176/xaupload/raw/master/Xa缓存.zip";
+const DOWNLOAD_BASE: &str = "https://gitee.com/dog176/xaupload/raw/master/";
+
+/// Build the download URL with proper encoding for the Chinese filename
+pub fn get_download_url() -> String {
+    let name = "Xa缓存.zip";
+    let encoded = url_encode(name);
+    format!("{}{}", DOWNLOAD_BASE, encoded)
+}
+
+/// Percent-encode non-ASCII and special characters for URL path segments
+fn url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            | b'-' | b'_' | b'.' | b'~' => result.push(b as char),
+            _ => result.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    result
+}
 
 /// Check network connectivity by HEAD request, return latency in ms
 pub fn check_network() -> Result<u64, String> {
@@ -176,7 +183,7 @@ pub fn calc_file_md5(path: &Path) -> Result<String, String> {
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)
         .map_err(|e| format!("读取文件失败: {}", e))?;
-    let digest = md5::compute(&buf);
+    let digest = md5::Md5::digest(&buf);
     Ok(format!("{:x}", digest))
 }
 
@@ -215,22 +222,20 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Format a 20-char progress bar
 pub fn format_progress(downloaded: u64, total: u64) -> String {
-    let pct = if total > 0 {
-        (downloaded as f64 / total as f64 * 100.0) as u32
+    let bar_width: usize = 20;
+    let (filled, pct) = if total > 0 {
+        let pct = ((downloaded as f64 / total as f64) * 100.0).min(100.0) as u32;
+        let filled = (pct as usize * bar_width / 100).min(bar_width);
+        (filled, pct)
     } else {
-        0
+        (0, 0)
     };
-    let filled = if total > 0 {
-        (downloaded as f64 / total as f64 * 20.0) as usize
-    } else {
-        0
-    };
-    let filled = filled.min(20);
-    let empty = 20 - filled;
+    let filled_str = "=".repeat(filled);
+    let empty_str = "-".repeat(bar_width - filled);
     format!(
-        "[{}>{}] {}%  ({}/ {})",
-        "=".repeat(filled.saturating_sub(1)).to_string() + if filled > 0 { "" } else { "" },
-        "-".repeat(if filled > 0 { empty.max(1) - if filled == 20 { 1 } else { 0 } } else { empty.max(1) }),
+        "[{}{}] {}% ({}/{})",
+        filled_str,
+        empty_str,
         pct,
         format_size(downloaded),
         format_size(total),
@@ -241,6 +246,7 @@ pub fn format_progress(downloaded: u64, total: u64) -> String {
 pub fn download_file(
     url: &str,
     dest: &Path,
+    known_size: u64,
     progress_cb: impl Fn(u64, u64),
 ) -> Result<(), String> {
     let client = reqwest::blocking::Client::builder()
@@ -253,7 +259,7 @@ pub fn download_file(
         .send()
         .map_err(|e| format!("下载请求失败: {}", e))?;
 
-    let total = resp.content_length().unwrap_or(0);
+    let total = if known_size > 0 { known_size } else { resp.content_length().unwrap_or(0) };
     let mut downloaded: u64 = 0;
     let mut buf = Vec::new();
 
