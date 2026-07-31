@@ -134,3 +134,148 @@ pub fn get_exe_dir() -> PathBuf {
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."))
 }
+
+// ============================================================================
+// Network / Download / MD5
+// ============================================================================
+
+/// Version info fetched from remote repo
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct VersionInfo {
+    pub md5: String,
+    pub size: u64,
+    #[serde(default)]
+    pub timestamp: String,
+    #[serde(default)]
+    pub filename: String,
+}
+
+pub const VERSION_URL: &str = "https://gitee.com/dog176/xaupload/raw/master/version.json";
+pub const DOWNLOAD_URL: &str = "https://gitee.com/dog176/xaupload/raw/master/Xa缓存.zip";
+
+/// Check network connectivity by HEAD request, return latency in ms
+pub fn check_network() -> Result<u64, String> {
+    let start = std::time::Instant::now();
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("创建网络客户端失败: {}", e))?;
+
+    client
+        .head("https://gitee.com")
+        .send()
+        .map_err(|e| format!("网络不可达: {}", e))?;
+
+    Ok(start.elapsed().as_millis() as u64)
+}
+
+/// Calculate MD5 hash of a file
+pub fn calc_file_md5(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+    let digest = md5::compute(&buf);
+    Ok(format!("{:x}", digest))
+}
+
+/// Fetch version info from remote repo
+pub fn fetch_version_info() -> Result<VersionInfo, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("创建客户端失败: {}", e))?;
+
+    let resp = client
+        .get(VERSION_URL)
+        .send()
+        .map_err(|e| format!("获取版本信息失败: {}", e))?;
+
+    let body = resp
+        .text()
+        .map_err(|e| format!("读取版本信息失败: {}", e))?;
+
+    let v: VersionInfo =
+        serde_json::from_str(&body).map_err(|e| format!("解析版本信息失败: {}", e))?;
+
+    Ok(v)
+}
+
+/// Format bytes to human-readable string
+pub fn format_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.0}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+/// Format a 20-char progress bar
+pub fn format_progress(downloaded: u64, total: u64) -> String {
+    let pct = if total > 0 {
+        (downloaded as f64 / total as f64 * 100.0) as u32
+    } else {
+        0
+    };
+    let filled = if total > 0 {
+        (downloaded as f64 / total as f64 * 20.0) as usize
+    } else {
+        0
+    };
+    let filled = filled.min(20);
+    let empty = 20 - filled;
+    format!(
+        "[{}>{}] {}%  ({}/ {})",
+        "=".repeat(filled.saturating_sub(1)).to_string() + if filled > 0 { "" } else { "" },
+        "-".repeat(if filled > 0 { empty.max(1) - if filled == 20 { 1 } else { 0 } } else { empty.max(1) }),
+        pct,
+        format_size(downloaded),
+        format_size(total),
+    )
+}
+
+/// Download file with progress callback
+pub fn download_file(
+    url: &str,
+    dest: &Path,
+    progress_cb: impl Fn(u64, u64),
+) -> Result<(), String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("创建下载客户端失败: {}", e))?;
+
+    let mut resp = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("下载请求失败: {}", e))?;
+
+    let total = resp.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    let mut buf = Vec::new();
+
+    // Read in chunks, report progress
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = resp
+            .read(&mut chunk)
+            .map_err(|e| format!("下载读取失败: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        downloaded += n as u64;
+        progress_cb(downloaded, total);
+    }
+
+    // Write to destination
+    let mut file =
+        fs::File::create(dest).map_err(|e| format!("无法创建文件 {}: {}", dest.display(), e))?;
+    file.write_all(&buf)
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+
+    Ok(())
+}

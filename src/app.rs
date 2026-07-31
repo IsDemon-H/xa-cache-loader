@@ -15,6 +15,7 @@ enum LoadState {
 
 enum BgMessage {
     Log(String),
+    DownloadProgress { downloaded: u64, total: u64 },
     Done { bot_core_exists: bool },
 }
 
@@ -32,7 +33,9 @@ impl XaApp {
     pub fn new() -> Self {
         let exe_dir = extract::get_exe_dir();
         let config = Config::load(&exe_dir);
-        let display_path = config.custom_path.clone()
+        let display_path = config
+            .custom_path
+            .clone()
             .unwrap_or_else(|| exe_dir.to_string_lossy().to_string());
         let bot_core_exists = extract::check_bot_core(&config.get_target_path(&exe_dir));
 
@@ -45,10 +48,8 @@ impl XaApp {
             bot_core_exists,
             bg_rx: None,
         };
-        app.add_log("使用说明:");
-        app.add_log("方法1: 可将APP和Xa缓存.zip放置在HanBot目录使用");
-        app.add_log("方法2: 在任意目录运行APP, 同目录放置Xa缓存.zip, 手动设置目录点加载");
-        app.add_log("提示: 如果没有放置Xa缓存.zip, 将加载内置的Xa缓存");
+        app.add_log("说明: 点击加载 → 从仓库下载Xa缓存后解压");
+        app.add_log("      同目录放置 Xa缓存.zip 则优先使用本地文件");
         app
     }
 
@@ -80,67 +81,123 @@ impl XaApp {
                 let now = Local::now().format("%H:%M:%S").to_string();
                 tx.send(BgMessage::Log(format!("[{}] {}", now, msg))).ok();
             };
-
-            match extract::clear_saves_dir(&target_dir_clone) {
-                Ok(_) => log("已清理 saves 目录"),
-                Err(e) => log(&format!("清理saves目录失败: {}", e)),
+            // ================================================================
+            // Step 1: Network check
+            // ================================================================
+            match extract::check_network() {
+                Ok(latency) => {
+                    log(&format!("网络检测: 远程仓库连接正常, 延迟{}ms", latency));
+                }
+                Err(e) => {
+                    log(&format!("网络检测: {}", e));
+                    log("将使用本地/内置缓存");
+                    do_local_extract(&tx, &log, &exe_dir, &target_dir_clone, &embedded_7z);
+                    return;
+                }
             }
 
-            let xa_zip = exe_dir.join("Xa缓存.zip");
+            // ================================================================
+            // Step 2: Fetch remote version info
+            // ================================================================
+            let remote_info = match extract::fetch_version_info() {
+                Ok(v) => {
+                    log("获取远程版本信息成功");
+                    v
+                }
+                Err(e) => {
+                    log(&format!("获取远程版本失败: {}", e));
+                    log("将使用本地/内置缓存");
+                    do_local_extract(&tx, &log, &exe_dir, &target_dir_clone, &embedded_7z);
+                    return;
+                }
+            };
 
-            if xa_zip.exists() {
-                log("检测到同目录下的Xa缓存.zip文件, 开始加载 Xa缓存");
+            log(&format!("远程 MD5: {}", remote_info.md5));
 
-                match extract::extract_zip(&xa_zip, &target_dir_clone, |_| {}) {
-                    Ok(_) => {
-                        let shard_src = target_dir_clone.join("Xalyn - Utils.shard");
-                        let shards_dir = target_dir_clone.join("shards");
-                        if shard_src.exists() {
-                            let _ = extract::move_file_to_dir(&shard_src, &shards_dir);
+            // ================================================================
+            // Step 3: Compare local file MD5
+            // ================================================================
+            let local_zip = exe_dir.join("Xa缓存.zip");
+            let mut need_download = true;
+
+            if local_zip.exists() {
+                match extract::calc_file_md5(&local_zip) {
+                    Ok(local_md5) => {
+                        log(&format!("本地 MD5: {}", local_md5));
+                        if local_md5 == remote_info.md5 {
+                            log("版本一致，跳过下载");
+                            need_download = false;
+                        } else {
+                            log("仓库有新版本，开始下载");
                         }
-                        let png_path = target_dir_clone.join("使用说明.png");
-                        if png_path.exists() { let _ = extract::delete_file(&png_path); }
-                        let txt_path = target_dir_clone.join("双合集使用及使用说明.txt");
-                        if txt_path.exists() {
-                            if let Ok(content) = std::fs::read_to_string(&txt_path) {
-                                log(&format!("使用说明: {}", content));
-                            }
-                            let _ = std::fs::remove_file(&txt_path);
-                        }
-
-                        log("Xa缓存加载完成");
                     }
                     Err(e) => {
-                        log(&format!("加载失败: {}", e));
+                        log(&format!("本地MD5计算失败: {}", e));
+                        log("仓库有新版本，开始下载");
                     }
                 }
             } else {
-                log("未检测到同目录下的Xa缓存.zip文件, 开始加载内置 Xa缓存");
+                log("本地无缓存文件");
+                log("开始下载");
+            }
 
-                let temp_7z = exe_dir.join("_hc_temp.7z");
-                match std::fs::write(&temp_7z, &embedded_7z) {
+            // ================================================================
+            // Step 4: Download if needed
+            // ================================================================
+                let size_str = extract::format_size(remote_info.size);
+                log(&format!("正在下载 Xa缓存.zip ({})", size_str));
+
+                let tx_p = tx.clone();
+                let dl_result = extract::download_file(
+                    extract::DOWNLOAD_URL,
+                    &local_zip,
+                    move |downloaded, total| {
+                        tx_p.send(BgMessage::DownloadProgress { downloaded, total })
+                            .ok();
+                    },
+                );
+
+                match dl_result {
                     Ok(_) => {
-                        match extract::extract_7z(&temp_7z, &target_dir_clone, |_| {}) {
-                            Ok(_) => {
-                                let _ = std::fs::remove_file(&temp_7z);
-                                log("Xa缓存加载完成");
+                        log("下载完成，校验MD5...");
+
+                        match extract::calc_file_md5(&local_zip) {
+                            Ok(dl_md5) => {
+                                log(&format!("本地 MD5: {}", dl_md5));
+                                log(&format!("远程 MD5: {}", remote_info.md5));
+                                if dl_md5 == remote_info.md5 {
+                                    log("MD5校验通过 ✓");
+                                } else {
+                                    log("MD5校验失败 ✗，文件可能损坏");
+                                    tx.send(BgMessage::Done {
+                                        bot_core_exists: true,
+                                    })
+                                    .ok();
+                                    return;
+                                }
                             }
                             Err(e) => {
-                                let _ = std::fs::remove_file(&temp_7z);
-                                log(&format!("加载失败: {}", e));
+                                log(&format!("MD5校验失败: {}", e));
+                                tx.send(BgMessage::Done {
+                                    bot_core_exists: true,
+                                })
+                                .ok();
+                                return;
                             }
                         }
                     }
                     Err(e) => {
-                        log(&format!("无法解压内置缓存: {}", e));
+                        log(&format!("下载失败: {}", e));
+                        log("将使用本地/内置缓存");
+                        // Don't return here — fall through to extract
                     }
                 }
             }
 
-            let bot_exists = extract::check_bot_core(&target_dir_clone);
-            tx.send(BgMessage::Done {
-                bot_core_exists: bot_exists,
-            }).ok();
+            // ================================================================
+            // Step 5: Extract
+            // ================================================================
+            do_extract(&tx, &log, &exe_dir, &target_dir_clone, &embedded_7z);
         });
     }
 
@@ -165,14 +222,120 @@ impl XaApp {
     }
 }
 
+// ============================================================================
+// Helper: local/built-in extraction (used as fallback)
+// ============================================================================
+
+fn do_local_extract(
+    tx: &mpsc::Sender<BgMessage>,
+    log: &impl Fn(&str),
+    exe_dir: &PathBuf,
+    target_dir: &PathBuf,
+    embedded_7z: &[u8],
+) {
+    do_extract(tx, log, exe_dir, target_dir, embedded_7z);
+}
+
+fn do_extract(
+    tx: &mpsc::Sender<BgMessage>,
+    log: &impl Fn(&str),
+    exe_dir: &PathBuf,
+    target_dir: &PathBuf,
+    embedded_7z: &[u8],
+) {
+    match extract::clear_saves_dir(target_dir) {
+        Ok(_) => log("已清理 saves 目录"),
+        Err(e) => log(&format!("清理saves目录失败: {}", e)),
+    }
+
+    let xa_zip = exe_dir.join("Xa缓存.zip");
+
+    if xa_zip.exists() {
+        log("解压 Xa缓存.zip...");
+
+        match extract::extract_zip(&xa_zip, target_dir, |_| {}) {
+            Ok(_) => {
+                let shard_src = target_dir.join("Xalyn - Utils.shard");
+                let shards_dir = target_dir.join("shards");
+                if shard_src.exists() {
+                    let _ = extract::move_file_to_dir(&shard_src, &shards_dir);
+                }
+                let png_path = target_dir.join("使用说明.png");
+                if png_path.exists() {
+                    let _ = extract::delete_file(&png_path);
+                }
+                let txt_path = target_dir.join("双合集使用及使用说明.txt");
+                if txt_path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&txt_path) {
+                        log(&format!("说明: {}", content));
+                    }
+                    let _ = std::fs::remove_file(&txt_path);
+                }
+
+                log("Xa缓存加载完成");
+            }
+            Err(e) => {
+                log(&format!("解压失败: {}", e));
+            }
+        }
+    } else {
+        log("解压内置 hc.7z...");
+
+        let temp_7z = exe_dir.join("_hc_temp.7z");
+        match std::fs::write(&temp_7z, embedded_7z) {
+            Ok(_) => {
+                match extract::extract_7z(&temp_7z, target_dir, |_| {}) {
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(&temp_7z);
+                        log("Xa缓存加载完成");
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&temp_7z);
+                        log(&format!("解压失败: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                log(&format!("无法解压内置缓存: {}", e));
+            }
+        }
+    }
+
+    let bot_exists = extract::check_bot_core(target_dir);
+    tx.send(BgMessage::Done {
+        bot_core_exists: bot_exists,
+    })
+    .ok();
+}
+
 impl eframe::App for XaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut done = false;
         let mut done_bot = false;
+        let mut dl_progress: Option<(u64, u64)> = None;
+
         if let Some(rx) = &self.bg_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
+                    BgMessage::Step(s) => {
+                        // Step messages are log-worthy items
+                        // We don't display them specially, just through logs
+                    }
                     BgMessage::Log(s) => self.logs.push(s),
+                    BgMessage::DownloadProgress { downloaded, total } => {
+                        let progress = extract::format_progress(downloaded, total);
+                        // Replace last log line if it's a progress line, otherwise append
+                        if let Some(last) = self.logs.last_mut() {
+                            if last.contains("[=") && last.contains('>') && last.contains('%') {
+                                *last = progress;
+                            } else {
+                                self.logs.push(progress);
+                            }
+                        } else {
+                            self.logs.push(progress);
+                        }
+                        dl_progress = Some((downloaded, total));
+                    }
                     BgMessage::Done { bot_core_exists } => {
                         done = true;
                         done_bot = bot_core_exists;
@@ -195,9 +358,9 @@ impl eframe::App for XaApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
-                let title_rect = ui.allocate_space(
-                    egui::vec2(ui.available_width() - 32.0, 20.0),
-                ).1;
+                let title_rect = ui
+                    .allocate_space(egui::vec2(ui.available_width() - 32.0, 20.0))
+                    .1;
                 let title_resp = ui.interact(title_rect, ui.next_auto_id(), egui::Sense::drag());
                 if title_resp.dragged() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
@@ -211,10 +374,12 @@ impl eframe::App for XaApp {
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let close_rect = ui.allocate_space(egui::vec2(24.0, 20.0)).1;
-                    let close_resp = ui.interact(close_rect, ui.next_auto_id(), egui::Sense::click());
+                    let close_resp =
+                        ui.interact(close_rect, ui.next_auto_id(), egui::Sense::click());
                     if close_resp.hovered() {
                         ui.painter().rect_filled(
-                            close_rect, 2.0,
+                            close_rect,
+                            2.0,
                             egui::Color32::from_rgb(200, 50, 50),
                         );
                     }
@@ -314,9 +479,8 @@ impl eframe::App for XaApp {
                 });
 
             if self.state != LoadState::Loading {
-                self.bot_core_exists = extract::check_bot_core(
-                    &self.config.get_target_path(&self.exe_dir),
-                );
+                self.bot_core_exists =
+                    extract::check_bot_core(&self.config.get_target_path(&self.exe_dir));
             }
         });
     }
