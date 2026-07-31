@@ -30,5 +30,3 @@ cargo build --release
 
 - **Rust** (edition 2024)
 - **egui/eframe** 0.31 — GUI 框架
-- **zip** + **sevenz-rust** — 压缩文件解压
-- **winresource** — Windows 版本资源嵌入
