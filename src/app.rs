@@ -144,6 +144,7 @@ impl XaApp {
             // ================================================================
             // Step 4: Download if needed
             // ================================================================
+            if need_download {
                 let size_str = extract::format_size(remote_info.size);
                 log(&format!("正在下载 Xa缓存.zip ({})", size_str));
 
@@ -317,10 +318,6 @@ impl eframe::App for XaApp {
         if let Some(rx) = &self.bg_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
-                    BgMessage::Step(s) => {
-                        // Step messages are log-worthy items
-                        // We don't display them specially, just through logs
-                    }
                     BgMessage::Log(s) => self.logs.push(s),
                     BgMessage::DownloadProgress { downloaded, total } => {
                         let progress = extract::format_progress(downloaded, total);
